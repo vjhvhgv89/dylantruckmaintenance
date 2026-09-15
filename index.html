@@ -1134,7 +1134,7 @@
         onSnapshot(fleetDocRef, (docSnap) => {
           if (docSnap.exists()) {
             const remoteData = docSnap.data();
-            if (remoteData && remoteData.trucks && Array.isArray(remoteData.trucks)) {
+            if (remoteData && Array.isArray(remoteData.trucks)) {
               // Purge demo vehicles from cloud if found
               const demoIds = ['dodge_2014', 'gmc_2018'];
               if (remoteData.trucks.some(t => demoIds.includes(t.id))) {
@@ -1142,6 +1142,19 @@
                 remoteData.activeTruckId = remoteData.trucks.length > 0 ? remoteData.trucks[0].id : null;
                 appState = remoteData;
                 saveState();
+                return;
+              }
+
+              // Smart merge: only accept remote data if it has MORE or EQUAL trucks
+              // This prevents an empty/stale Firestore doc from wiping local data
+              const localTruckCount = (appState.trucks || []).length;
+              const remoteTruckCount = remoteData.trucks.length;
+
+              if (remoteTruckCount < localTruckCount) {
+                // Local is richer — push local state to cloud instead
+                console.log('Local data is ahead of cloud. Pushing local to cloud...');
+                syncToCloud();
+                updateCloudSyncUI('synced', 'Cloud Synced');
                 return;
               }
 
@@ -1168,17 +1181,21 @@
             }
             updateCloudSyncUI('synced', 'Cloud Synced');
           } else {
-            // First time initialization in Firestore - seed local data to cloud
-            updateCloudSyncUI('syncing', 'Uploading...');
-            setDoc(fleetDocRef, appState)
-              .then(() => updateCloudSyncUI('synced', 'Cloud Synced'))
-              .catch((err) => {
-                console.warn('Firestore initial write notice:', err);
-                updateCloudSyncUI('offline', 'Local Cache');
-              });
+            // Firestore doc doesn't exist yet — seed it from local state
+            if (appState && appState.trucks && appState.trucks.length > 0) {
+              updateCloudSyncUI('syncing', 'Uploading...');
+              setDoc(fleetDocRef, appState)
+                .then(() => updateCloudSyncUI('synced', 'Cloud Synced'))
+                .catch((err) => {
+                  console.warn('Firestore initial seed failed:', err);
+                  updateCloudSyncUI('offline', 'Local Cache');
+                });
+            } else {
+              updateCloudSyncUI('synced', 'Cloud Synced');
+            }
           }
         }, (err) => {
-          console.warn('Firestore sync listener notice:', err);
+          console.warn('Firestore sync listener error:', err);
           updateCloudSyncUI('offline', 'Local Cache');
         });
       } catch (err) {
@@ -1196,13 +1213,14 @@
       const fleetDocRef = doc(db, 'fleet', 'main_fleet');
 
       updateCloudSyncUI('syncing', 'Saving...');
-      setDoc(fleetDocRef, appState, { merge: true })
+      // Use setDoc WITHOUT merge:true so arrays are fully replaced (not merged)
+      setDoc(fleetDocRef, appState)
         .then(() => {
           updateCloudSyncUI('synced', 'Cloud Synced');
         })
         .catch((err) => {
           console.warn('Failed syncing to Firestore:', err);
-          updateCloudSyncUI('offline', 'Local Only');
+          updateCloudSyncUI('offline', 'Local Only — check Firestore rules');
         });
     }
 
