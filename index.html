@@ -209,8 +209,14 @@
           </div>
         </div>
 
-        <!-- Live Status Badge -->
-        <div id="headerStatusBadge" class="text-[11px] font-bold px-2 py-0.5 rounded-full border hidden items-center gap-1 shrink-0"></div>
+        <!-- Live Status & Cloud Badges -->
+        <div class="flex items-center gap-1.5 shrink-0">
+          <div id="mobileCloudSyncBadge" title="Firebase Cloud Sync" class="text-[10px] font-bold px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600 flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+            <span class="sync-label">Syncing</span>
+          </div>
+          <div id="headerStatusBadge" class="text-[11px] font-bold px-2 py-0.5 rounded-full border hidden items-center gap-1"></div>
+        </div>
       </div>
 
       <!-- Truck Switcher: Horizontal Pills (1-tap switching + Add Truck) -->
@@ -233,6 +239,10 @@
         <span id="desktopHeaderTruckName" class="text-sm lg:text-base font-extrabold text-slate-900 truncate">2014 Dodge Ram 2500</span>
         <span id="desktopHeaderMileageBadge" class="bg-brand-50 text-brand-700 text-xs font-bold px-2.5 py-0.5 rounded-full border border-brand-200">148,250 mi</span>
         <div id="desktopHeaderStatusBadge" class="hidden items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full border"></div>
+        <div id="desktopCloudSyncBadge" title="Firebase Cloud Sync" class="flex items-center gap-1.5 text-xs font-bold px-2.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+          <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+          <span class="sync-label">Connecting Cloud...</span>
+        </div>
       </div>
 
       <div class="flex items-center space-x-2 shrink-0">
@@ -887,6 +897,54 @@
     </div>
   </div>
 
+  <!-- ================= FIREBASE CLOUD BACKEND & SYNC ================= -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAnalytics, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-analytics.js";
+    import { 
+      getFirestore, 
+      doc, 
+      setDoc, 
+      getDoc, 
+      onSnapshot 
+    } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    // Web app's Firebase configuration
+    const firebaseConfig = {
+      apiKey: "AIzaSyDn8yv9UPluPFJ90K7e8h_KnSJyadgyFpg",
+      authDomain: "truckmaintenance.firebaseapp.com",
+      projectId: "truckmaintenance",
+      storageBucket: "truckmaintenance.firebasestorage.app",
+      messagingSenderId: "458081061594",
+      appId: "1:458081061594:web:dde92d11ae0c4094cd73e3",
+      measurementId: "G-GN520VPMXJ"
+    };
+
+    try {
+      // Initialize Firebase
+      const app = initializeApp(firebaseConfig);
+      window.firebaseApp = app;
+
+      // Initialize Analytics if supported in the environment
+      isSupported().then(supported => {
+        if (supported) {
+          window.firebaseAnalytics = getAnalytics(app);
+        }
+      }).catch(() => {});
+
+      // Initialize Cloud Firestore
+      const db = getFirestore(app);
+      window.firebaseDb = db;
+      window.firebaseFirestore = { doc, setDoc, getDoc, onSnapshot };
+
+      // Dispatch connected event
+      window.dispatchEvent(new CustomEvent('firebase-ready', { detail: { app, db } }));
+    } catch (err) {
+      console.warn("Firebase initialization notice:", err);
+      window.dispatchEvent(new CustomEvent('firebase-error', { detail: err }));
+    }
+  </script>
+
   <!-- ================= JAVASCRIPT APPLICATION LOGIC ================= -->
   <script>
     /* ==========================================================================
@@ -1085,6 +1143,128 @@
       }
     }
 
+    /* ==========================================================================
+       FIREBASE REAL-TIME CLOUD SYNC & LOCAL STORAGE
+       ========================================================================== */
+    let isRemoteSyncInProgress = false;
+
+    function updateCloudSyncUI(status, label) {
+      const desktopBadge = document.getElementById('desktopCloudSyncBadge');
+      const mobileBadge = document.getElementById('mobileCloudSyncBadge');
+      
+      const updateEl = (el) => {
+        if (!el) return;
+        const dot = el.querySelector('span');
+        const text = el.querySelector('.sync-label');
+        if (text) text.innerText = label;
+
+        el.classList.remove(
+          'border-emerald-200', 'bg-emerald-50', 'text-emerald-700',
+          'border-amber-200', 'bg-amber-50', 'text-amber-700',
+          'border-slate-200', 'bg-slate-50', 'text-slate-600', 'text-slate-500'
+        );
+
+        if (status === 'synced') {
+          el.classList.add('border-emerald-200', 'bg-emerald-50', 'text-emerald-700');
+          if (dot) dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0';
+        } else if (status === 'syncing') {
+          el.classList.add('border-amber-200', 'bg-amber-50', 'text-amber-700');
+          if (dot) dot.className = 'w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping shrink-0';
+        } else {
+          el.classList.add('border-slate-200', 'bg-slate-50', 'text-slate-500');
+          if (dot) dot.className = 'w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0';
+        }
+      };
+
+      updateEl(desktopBadge);
+      updateEl(mobileBadge);
+    }
+
+    function initFirebaseSync() {
+      if (!window.firebaseDb || !window.firebaseFirestore) {
+        window.addEventListener('firebase-ready', () => initFirebaseSync(), { once: true });
+        window.addEventListener('firebase-error', () => {
+          updateCloudSyncUI('offline', 'Local Cache');
+        }, { once: true });
+        setTimeout(() => {
+          if (!window.firebaseDb) updateCloudSyncUI('offline', 'Local Cache');
+        }, 3500);
+        return;
+      }
+
+      const { doc, setDoc, onSnapshot } = window.firebaseFirestore;
+      const db = window.firebaseDb;
+      const fleetDocRef = doc(db, 'fleet', 'main_fleet');
+
+      updateCloudSyncUI('syncing', 'Connecting...');
+
+      try {
+        // Realtime listener for cross-device cloud synchronization
+        onSnapshot(fleetDocRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const remoteData = docSnap.data();
+            if (remoteData && remoteData.trucks && Array.isArray(remoteData.trucks)) {
+              const currentStr = JSON.stringify(appState);
+              const remoteStr = JSON.stringify(remoteData);
+              if (currentStr !== remoteStr) {
+                isRemoteSyncInProgress = true;
+                appState = remoteData;
+                try {
+                  localStorage.setItem(STORAGE_KEY, remoteStr);
+                } catch (e) {}
+                renderDashboard();
+                updateTruckSelectors();
+                
+                const activePane = document.querySelector('.tab-pane:not(.hidden)');
+                if (activePane) {
+                  const id = activePane.id;
+                  if (id === 'tabMileage') renderMileageTab();
+                  if (id === 'tabHistory') renderHistoryTab();
+                  if (id === 'tabManage') renderManageTrucksTab();
+                }
+                isRemoteSyncInProgress = false;
+              }
+            }
+            updateCloudSyncUI('synced', 'Cloud Synced');
+          } else {
+            // First time initialization in Firestore - seed local data to cloud
+            updateCloudSyncUI('syncing', 'Uploading...');
+            setDoc(fleetDocRef, appState)
+              .then(() => updateCloudSyncUI('synced', 'Cloud Synced'))
+              .catch((err) => {
+                console.warn('Firestore initial write notice:', err);
+                updateCloudSyncUI('offline', 'Local Cache');
+              });
+          }
+        }, (err) => {
+          console.warn('Firestore sync listener notice:', err);
+          updateCloudSyncUI('offline', 'Local Cache');
+        });
+      } catch (err) {
+        console.warn('Firestore setup error:', err);
+        updateCloudSyncUI('offline', 'Local Cache');
+      }
+    }
+
+    function syncToCloud() {
+      if (isRemoteSyncInProgress) return;
+      if (!window.firebaseDb || !window.firebaseFirestore) return;
+
+      const { doc, setDoc } = window.firebaseFirestore;
+      const db = window.firebaseDb;
+      const fleetDocRef = doc(db, 'fleet', 'main_fleet');
+
+      updateCloudSyncUI('syncing', 'Saving...');
+      setDoc(fleetDocRef, appState, { merge: true })
+        .then(() => {
+          updateCloudSyncUI('synced', 'Cloud Synced');
+        })
+        .catch((err) => {
+          console.warn('Failed syncing to Firestore:', err);
+          updateCloudSyncUI('offline', 'Local Only');
+        });
+    }
+
     function saveState() {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
@@ -1092,6 +1272,9 @@
         console.error('Failed saving to localStorage:', err);
         showToast('Error saving data to local storage', 'error');
       }
+
+      // Sync to Firebase Cloud Firestore
+      syncToCloud();
     }
 
     function getActiveTruck() {
@@ -2448,6 +2631,7 @@
     window.addEventListener('DOMContentLoaded', () => {
       loadState();
       initViewMode();
+      initFirebaseSync();
       updateTruckSelectors();
       renderDashboard();
       
