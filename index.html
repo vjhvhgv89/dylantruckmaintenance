@@ -1342,6 +1342,13 @@
     let currentDashboardFilter = 'all'; // 'all', 'attention', 'overdue', 'upcoming', 'good'
     let currentViewMode = null; // 'card' or 'list'
 
+    function isSampleTruck(t) {
+      // Detect the built-in sample / starter truck by nickname or by the literal id
+      const nick = (t.nickname || '').toLowerCase();
+      const id   = (t.id   || '').toLowerCase();
+      return nick === 'sample data' || nick.includes('sample') || id === 'sample_truck' || id.includes('sample');
+    }
+
     function loadState() {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
@@ -1353,14 +1360,15 @@
       }
 
       if (!appState || !appState.trucks) {
-        appState = getStarterData();
+        appState = { activeTruckId: null, trucks: [], lastWeeklyCheckTimestamp: Date.now() };
         saveState();
       }
 
       // Purge any lingering demo vehicles (Dodge & GMC) from previous sessions
       const demoIds = ['dodge_2014', 'gmc_2018'];
-      if (appState.trucks && appState.trucks.some(t => demoIds.includes(t.id))) {
-        appState.trucks = appState.trucks.filter(t => !demoIds.includes(t.id));
+      const hasDemos = appState.trucks.some(t => demoIds.includes(t.id) || isSampleTruck(t));
+      if (hasDemos) {
+        appState.trucks = appState.trucks.filter(t => !demoIds.includes(t.id) && !isSampleTruck(t));
         appState.activeTruckId = appState.trucks.length > 0 ? appState.trucks[0].id : null;
         saveState();
       }
@@ -1433,15 +1441,20 @@
         // Realtime listener for cross-device cloud synchronization
         onSnapshot(fleetDocRef, (docSnap) => {
           if (docSnap.exists()) {
-            const remoteData = docSnap.data();
+            let remoteData = docSnap.data();
             if (remoteData && remoteData.trucks && Array.isArray(remoteData.trucks)) {
-              // Purge demo vehicles from cloud if found
+              // Purge ALL demo / sample vehicles from cloud data
               const demoIds = ['dodge_2014', 'gmc_2018'];
-              if (remoteData.trucks.some(t => demoIds.includes(t.id))) {
-                remoteData.trucks = remoteData.trucks.filter(t => !demoIds.includes(t.id));
+              const hasDirtyData = remoteData.trucks.some(t => demoIds.includes(t.id) || isSampleTruck(t));
+              if (hasDirtyData) {
+                remoteData.trucks = remoteData.trucks.filter(t => !demoIds.includes(t.id) && !isSampleTruck(t));
                 remoteData.activeTruckId = remoteData.trucks.length > 0 ? remoteData.trucks[0].id : null;
                 appState = remoteData;
-                saveState();
+                saveState(); // will call syncToCloud to push clean version back up
+                renderDashboard();
+                updateTruckSelectors();
+                renderManageTrucksTab();
+                updateCloudSyncUI('synced', 'Cloud Synced');
                 return;
               }
 
@@ -1496,7 +1509,8 @@
       const fleetDocRef = doc(db, 'fleet', 'main_fleet');
 
       updateCloudSyncUI('syncing', 'Saving...');
-      setDoc(fleetDocRef, appState, { merge: true })
+      // Use full overwrite (no merge) so deletions propagate correctly to cloud
+      setDoc(fleetDocRef, appState)
         .then(() => {
           updateCloudSyncUI('synced', 'Cloud Synced');
         })
